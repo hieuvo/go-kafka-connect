@@ -3,6 +3,7 @@ package connectors
 import (
 	"crypto/tls"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -233,11 +234,17 @@ func (c *highLevelClient) IsUpToDate(connector string, config map[string]interfa
 		return false, errors.New(fmt.Sprintf("status code: %d", configResp.Code))
 	}
 
-	if len(configResp.Config) != len(copyConfig) {
+	// Kafka Connect may inject runtime keys (prefixed with "__internal.") into the deployed
+	// config that never appear in the submitted config. Ignore them on both sides so they
+	// don't cause a false "not up to date" result.
+	deployedConfig := withoutInternalConfigKeys(configResp.Config)
+	desiredConfig := withoutInternalConfigKeys(copyConfig)
+
+	if len(deployedConfig) != len(desiredConfig) {
 		return false, nil
 	}
-	for key, value := range configResp.Config {
-		if convertConfigValueToString(copyConfig[key]) != convertConfigValueToString(value) {
+	for key, value := range deployedConfig {
+		if convertConfigValueToString(desiredConfig[key]) != convertConfigValueToString(value) {
 			return false, nil
 		}
 	}
@@ -247,6 +254,20 @@ func (c *highLevelClient) IsUpToDate(connector string, config map[string]interfa
 // Because trying to compare the same field on 2 different config may return false negative if one is encoded as a string and not the other
 func convertConfigValueToString(value interface{}) string {
 	return fmt.Sprintf("%v", value)
+}
+
+// withoutInternalConfigKeys returns a copy of config with the keys Kafka Connect adds at
+// runtime (prefixed with "__internal.") removed, so they are ignored when comparing
+// deployed vs desired config. The input map is left unmodified.
+func withoutInternalConfigKeys(config map[string]interface{}) map[string]interface{} {
+	filtered := make(map[string]interface{}, len(config))
+	for key, value := range config {
+		if strings.HasPrefix(key, "__internal.") {
+			continue
+		}
+		filtered[key] = value
+	}
+	return filtered
 }
 
 // tryUntil repeats exec until it return true or timeout is reached
